@@ -1,0 +1,92 @@
+version: "2.2"
+
+services:
+  setup:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.1
+    user: "0"
+    command: >
+      bash -c '
+        echo "Waiting for Elasticsearch availability";
+        until curl --connect-timeout 5 --trace-time -s http://elasticsearch:9200 | grep -q "missing authentication credentials"; do sleep 5; echo "Retrying..."; done;
+        echo "Elasticsearch is up";
+        echo "Setting kibana_system password";
+        until curl --connect-timeout 5 -s -X POST -u "elastic:${ELASTIC_PASSWORD:-changeme}" -H "Content-Type: application/json" http://elasticsearch:9200/_security/user/kibana_system/_password -d "{\"password\":\"${KIBANA_PASSWORD:-changeme}\"}" | grep -q "^{}"; do sleep 5; done;
+        echo "All done!";
+      '
+  elasticsearch:
+    depends_on:
+      - setup
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.6.1
+    container_name: es-semantic-elasticsearch
+    volumes:
+      - esdata:/usr/share/elasticsearch/data
+    ports:
+      - 9200:9200
+    restart: always
+    environment:
+      - discovery.type=single-node
+      - ELASTIC_PASSWORD=${ELASTIC_PASSWORD:-changeme}
+      - xpack.security.enabled=true
+      - ES_JAVA_OPTS=-Xms750m -Xmx750m
+
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.6.1
+    container_name: es-semantic-kibana
+    volumes:
+      - kibanadata:/usr/share/kibana/data
+    ports:
+      - 5601:5601
+    restart: always
+    environment:
+      - SERVERNAME=kibana
+      - ELASTICSEARCH_HOSTS=http://elasticsearch:9200
+      - ELASTICSEARCH_USERNAME=kibana_system
+      - ELASTICSEARCH_PASSWORD=${KIBANA_PASSWORD:-changeme}
+
+  flask:
+    container_name: es-semantic-flask
+    links:
+      - elasticsearch
+    depends_on:
+      - elasticsearch
+      - kibana
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 5000:5000
+    environment:
+      - ES_HOST=elasticsearch
+    restart: always
+    profiles:
+      - backend
+
+  flask-cuda:
+    container_name: es-semantic-flask
+    links:
+      - elasticsearch
+    depends_on:
+      - elasticsearch
+      - kibana
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - 5000:5000
+    environment:
+      - ES_HOST=elasticsearch
+    restart: always
+    profiles:
+      - backend-cuda
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+volumes:
+  esdata:
+    driver: local
+  kibanadata:
+    driver: local
